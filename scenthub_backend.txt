@@ -1,0 +1,1957 @@
+
+==================================================
+FILE: backend\.env
+==================================================
+
+SECRET_KEY=django-insecure-#x(4lyn1qjf^m0sk)%np0l$$c0n1ptq)0yx85xuh=hntlv$lh_
+DEBUG=True
+
+==================================================
+FILE: backend\manage.py
+==================================================
+
+#!/usr/bin/env python
+"""Django's command-line utility for administrative tasks."""
+import os
+import sys
+
+
+def main():
+    """Run administrative tasks."""
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'scenthub_project.settings')
+    try:
+        from django.core.management import execute_from_command_line
+    except ImportError as exc:
+        raise ImportError(
+            "Couldn't import Django. Are you sure it's installed and "
+            "available on your PYTHONPATH environment variable? Did you "
+            "forget to activate a virtual environment?"
+        ) from exc
+    execute_from_command_line(sys.argv)
+
+
+if __name__ == '__main__':
+    main()
+
+
+==================================================
+FILE: backend\audit\admin.py
+==================================================
+
+from django.contrib import admin
+from .models import AuditLog, WebhookLog
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    """
+    Administrative interface configuration for data mutations tracking logs.
+    """
+    list_display = ['id', 'action', 'app_label', 'model_name', 'object_id', 'user', 'timestamp']
+    list_filter = ['action', 'app_label', 'timestamp']
+    search_fields = ['model_name', 'object_id', 'user__username', 'changes_payload']
+    date_hierarchy = 'timestamp'
+
+    # Making audit data strictly read-only to guarantee compliance and log integrity
+    readonly_fields = ['user', 'app_label', 'model_name', 'object_id', 'action', 'changes_payload', 'timestamp']
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(WebhookLog)
+class WebhookLogAdmin(admin.ModelAdmin):
+    """
+    Administrative interface configuration for raw financial response payloads.
+    """
+    list_display = ['id', 'provider', 'event_type', 'order_id', 'is_processed', 'timestamp']
+    list_filter = ['provider', 'is_processed', 'timestamp']
+    search_fields = ['event_type', 'order_id', 'raw_payload']
+    date_hierarchy = 'timestamp'
+
+    # Ensuring raw evidence payload cannot be modified or forged inside the admin panel
+    readonly_fields = ['provider', 'event_type', 'raw_payload', 'order_id', 'is_processed', 'timestamp']
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+==================================================
+FILE: backend\audit\apps.py
+==================================================
+
+from django.apps import AppConfig
+
+
+class AuditConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'audit'
+    verbose_name = 'Auditoria do Sistema'
+
+    def ready(self):
+        """
+        Imports the audit signals pipeline during application registry configuration.
+        """
+        import audit.signals
+
+
+==================================================
+FILE: backend\audit\models.py
+==================================================
+
+from django.db import models
+from django.contrib.auth.models import User
+
+
+class AuditLog(models.Model):
+    """
+    Tracks critical master data modifications across the platform.
+    Used for general compliance, price tracking, and inventory auditing.
+    """
+    ACTION_CHOICES = [
+        ('CREATE', 'Criação'),
+        ('UPDATE', 'Alteração'),
+        ('DELETE', 'Exclusão'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True, related_name="audit_logs")
+    app_label = models.CharField(max_length=100, help_text="The app where the model belongs (e.g., 'core', 'payments').")
+    model_name = models.CharField(max_length=100, help_text="The target database table name.")
+    object_id = models.PositiveIntegerField(help_text="Primary key identifier of the modified row.")
+
+    action = models.CharField(max_length=10, choices=ACTION_CHOICES)
+    changes_payload = models.JSONField(help_text="Key-value mapping of modified field states.")
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Log de Auditoria Geral"
+        verbose_name_plural = "Logs de Auditoria Geral"
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        return f"[{self.get_action_display()}] {self.app_label}.{self.model_name} #{self.object_id} por {self.user.username if self.user else 'Sistema'}"
+
+
+class WebhookLog(models.Model):
+    """
+    Stores untampered raw HTTP response payloads incoming from external financial APIs.
+    Essential for tracing transaction failures and validating payment security.
+    """
+    PROVIDER_CHOICES = [
+        ('STRIPE', 'Stripe'),
+        ('MERCADO_PAGO', 'Mercado Pago'),
+    ]
+
+    provider = models.CharField(max_length=50, choices=PROVIDER_CHOICES)
+    event_type = models.CharField(max_length=255, blank=True, null=True, help_text="The raw event header or type identifier.")
+    raw_payload = models.JSONField(help_text="Full, untampered raw body content received from the payment gateway.")
+    order_id = models.PositiveIntegerField(blank=True, null=True, db_index=True, help_text="Extracted order ID from the payload.")
+    is_processed = models.BooleanField(default=False, help_text="Tracks whether the signal handler executed successfully.")
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Log de Webhook"
+        verbose_name_plural = "Logs de Webhooks"
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        return f"Webhook [{self.get_provider_display()}] - Evento: {self.event_type or 'RAW'} - Pedido #{self.order_id}"
+
+
+==================================================
+FILE: backend\audit\serializers.py
+==================================================
+
+from rest_framework import serializers
+from .models import AuditLog, WebhookLog
+
+
+class AuditLogSerializer(serializers.ModelSerializer):
+    """
+    Serializes standard system audit logs.
+    """
+    class Meta:
+        model = AuditLog
+        fields = '__all__'
+
+
+class WebhookLogSerializer(serializers.ModelSerializer):
+    """
+    Serializes raw webhook payloads from external gateways.
+    """
+    class Meta:
+        model = WebhookLog
+        fields = '__all__'
+
+
+==================================================
+FILE: backend\audit\signals.py
+==================================================
+
+import json
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
+from django.contrib.contenttypes.models import ContentType
+from core.models import Perfume
+from payments.models import Order
+from .models import AuditLog
+
+
+@receiver(post_save, sender=Perfume)
+def audit_perfume_save(sender, instance, created, **kwargs):
+    """
+    Listens to Perfume mutations to log modifications on price or stock levels.
+    """
+    action = 'CREATE' if created else 'UPDATE'
+
+    # Building a snapshot of critical data fields
+    payload = {
+        "name": instance.name,
+        "price": str(instance.price),
+        "stock_quantity": instance.stock_quantity,
+        "is_active": instance.is_active
+    }
+
+    # Writes down the state modification into the black box
+    AuditLog.objects.create(
+        user=None,  # Set to None for system/automated background tasks
+        app_label='core',
+        model_name='perfume',
+        object_id=instance.id,
+        action=action,
+        changes_payload=payload
+    )
+
+
+@receiver(post_save, sender=Order)
+def audit_order_save(sender, instance, created, **kwargs):
+    """
+    Listens to Order state modifications to trace transaction lifecycle compliance.
+    """
+    if not created:  # We focus primarily on state transitions (e.g., PENDING -> PAID)
+        payload = {
+            "status": instance.status,
+            "total_amount": str(instance.total_amount),
+            "payment_method": instance.payment_method,
+            "transaction_id": instance.transaction_id
+        }
+
+        AuditLog.objects.create(
+            user=instance.user,
+            app_label='payments',
+            model_name='order',
+            object_id=instance.id,
+            action='UPDATE',
+            changes_payload=payload
+        )
+
+
+@receiver(post_delete, sender=Perfume)
+def audit_perfume_delete(sender, instance, **kwargs):
+    """
+    Logs catastrophic product deletions from the store catalog.
+    """
+    payload = {
+        "name": instance.name,
+        "price": str(instance.price),
+        "notice": "Registro deletado permanentemente do banco de dados."
+    }
+
+    AuditLog.objects.create(
+        user=None,
+        app_label='core',
+        model_name='perfume',
+        object_id=instance.id,
+        action='DELETE',
+        changes_payload=payload
+    )
+
+
+==================================================
+FILE: backend\audit\urls.py
+==================================================
+
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import AuditLogViewSet, WebhookLogViewSet
+
+router = DefaultRouter()
+router.register(r'logs', AuditLogViewSet, basename='auditlog')
+router.register(r'webhooks', WebhookLogViewSet, basename='webhooklog')
+
+urlpatterns = [
+    path('', include(router.urls)),
+]
+
+
+==================================================
+FILE: backend\audit\views.py
+==================================================
+
+from rest_framework import viewsets
+from rest_framework.permissions import IsAdminUser
+from .models import AuditLog, WebhookLog
+from .serializers import AuditLogSerializer, WebhookLogSerializer
+
+
+class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Strictly read-only endpoints for system administrators to review logs.
+    """
+    queryset = AuditLog.objects.all()
+    serializer_class = AuditLogSerializer
+    permission_classes = [IsAdminUser]
+
+
+class WebhookLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Exposes raw financial payloads for admin debugging.
+    """
+    queryset = WebhookLog.objects.all()
+    serializer_class = WebhookLogSerializer
+    permission_classes = [IsAdminUser]
+
+
+==================================================
+FILE: backend\audit\__init__.py
+==================================================
+
+
+
+==================================================
+FILE: backend\core\admin.py
+==================================================
+
+# src/core/admin.py
+from django.contrib import admin
+from .models import (
+    UserProfile, Store, StoreEmployee, Category, 
+    Perfume, PriceHistory, Review, Cart, CartItem, Order, OrderItem
+)
+
+"""
+Developer Note: Administrative interface for internal Axis operations.
+All models registered to ensure auditability and operational triage capability.
+Quiz artifacts removed to match current core model schema.
+"""
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    list_display = ('user',)
+
+@admin.register(Store)
+class StoreAdmin(admin.ModelAdmin):
+    list_display = ('name', 'merchant', 'status', 'created_at')
+    list_filter = ('status',)
+    prepopulated_fields = {'slug': ('name',)}
+    search_fields = ('name', 'merchant__username')
+
+@admin.register(StoreEmployee)
+class StoreEmployeeAdmin(admin.ModelAdmin):
+    list_display = ('user', 'store', 'role', 'created_at')
+    list_filter = ('role', 'store')
+    search_fields = ('user__username', 'store__name')
+
+@admin.register(Category)
+class CategoryAdmin(admin.ModelAdmin):
+    list_display = ('name',)
+    prepopulated_fields = {'slug': ('name',)}
+
+@admin.register(Perfume)
+class PerfumeAdmin(admin.ModelAdmin):
+    list_display = ('name', 'store', 'price', 'stock_quantity', 'is_active', 'is_archived')
+    list_filter = ('store', 'is_active', 'is_archived', 'categories')
+    prepopulated_fields = {'slug': ('name',)}
+    search_fields = ('name', 'description')
+
+@admin.register(PriceHistory)
+class PriceHistoryAdmin(admin.ModelAdmin):
+    list_display = ('perfume', 'old_price', 'new_price', 'changed_at')
+    list_filter = ('perfume',)
+    search_fields = ('perfume__name',)
+
+@admin.register(Review)
+class ReviewAdmin(admin.ModelAdmin):
+    list_display = ('perfume', 'user', 'rating', 'created_at')
+    list_filter = ('rating',)
+    search_fields = ('perfume__name', 'user__username')
+
+class CartItemInLine(admin.TabularInline):
+    model = CartItem
+    extra = 0
+
+@admin.register(Cart)
+class CartAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'session_key', 'created_at')
+    inlines = [CartItemInLine]
+
+class OrderItemInLine(admin.TabularInline):
+    model = OrderItem
+    extra = 0
+    readonly_fields = ('historical_price',)
+
+@admin.register(Order)
+class OrderAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'total_paid', 'axis_commission', 'created_at')
+    list_filter = ('created_at',)
+    search_fields = ('user__username',)
+    inlines = [OrderItemInLine]
+    readonly_fields = ('axis_commission', 'total_paid', 'subtotal')
+
+
+==================================================
+FILE: backend\core\apps.py
+==================================================
+
+# backend/core/apps.py
+from django.apps import AppConfig
+
+class CoreConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'core'
+
+    def ready(self):
+        """
+        Imports signals logic when the application starts.
+        """
+        import core.signals
+
+
+==================================================
+FILE: backend\core\models.py
+==================================================
+
+# src/core/models.py
+from django.db import models
+from django.contrib.auth.models import User
+from django.core.validators import MinValueValidator, MaxValueValidator
+
+"""
+Developer Note: English type interfaces and comments preserved for repository integrity.
+User Interface / Status Displays: Pure premium Portuguese layouts adhering to Axis brand guidelines.
+System Integrity: Implemented Soft-Delete / Archival logic on Perfume model.
+"""
+
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+
+    def __str__(self):
+        return f"Perfil de {self.user.username}"
+
+
+class Store(models.Model):
+    """
+    Represents a merchant store inside the Your Essence platform.
+    Features state compliance tracking for multi-step onboarding and audit verification freeze.
+    """
+    STATUS_CHOICES = [
+        ('SANDBOX', 'Em Configuração / Rascunho (Inativa)'),
+        ('PENDING', 'Aguardando Aprovação / Triagem'),
+        ('APPROVED', 'Aprovada / Ativa no Catálogo'),
+        ('SUSPENDED', 'Suspensa / Sob Análise de Fraude ou Restrição'),
+    ]
+
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(unique=True)
+    description = models.TextField(blank=True, null=True)
+    logo_url = models.URLField(max_length=500, blank=True, null=True)
+    merchant = models.ForeignKey(User, on_delete=models.CASCADE, related_name="owned_stores")
+    
+    # Target compliance data fields for criminal/credit history checks
+    cnpj = models.CharField(max_length=18, blank=True, null=True, unique=True)
+    cpf = models.CharField(max_length=14, blank=True, null=True, unique=True)
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    address = models.TextField(blank=True, null=True)
+    
+    # Operational flags for onboarding triage management
+    status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='SANDBOX')
+    triaged_at = models.DateTimeField(blank=True, null=True)
+    rejection_reason = models.TextField(blank=True, null=True, help_text="Motivo detalhado do veto de segurança.")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Loja"
+        verbose_name_plural = "Lojas"
+
+    def __str__(self):
+        return f"{self.name} [{self.get_status_display()}]"
+
+
+class StoreEmployee(models.Model):
+    """
+    Maps platform users to default RBAC roles inside a target store micro-universe.
+    Provides standard out-of-the-box permission sets without merchant configuration overload.
+    """
+    ROLE_CHOICES = [
+        ('MANAGER', 'Gerente da Loja'),
+        ('STAFF', 'Cadastrador / Estoquista'),
+    ]
+
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name="employees")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="store_employments")
+    role = models.CharField(max_length=15, choices=ROLE_CHOICES, default='STAFF')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Funcionário da Loja"
+        verbose_name_plural = "Funcionários das Lojas"
+        unique_together = ('store', 'user')
+
+    def __str__(self):
+        return f"{self.user.username} - {self.get_role_display()} em ({self.store.name})"
+
+
+class Category(models.Model):
+    name = models.CharField(max_length=100)
+    slug = models.SlugField(unique=True)
+
+    class Meta:
+        verbose_name = "Categoria"
+        verbose_name_plural = "Categorias"
+
+    def __str__(self):
+        return self.name
+
+
+class Perfume(models.Model):
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name="perfumes")
+    categories = models.ManyToManyField(Category, related_name="perfumes")
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(unique=True, blank=True, null=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    image_url = models.URLField(max_length=500)
+    stock_quantity = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True, help_text="Visível na vitrine.")
+    is_archived = models.BooleanField(default=False, help_text="Lojista inativou o produto.")
+
+    # Apenas a descrição padrão importa agora
+    description = models.TextField(help_text="Descrição comercial padrão do perfume.")
+
+    top_notes = models.CharField(max_length=500, blank=True, help_text="Notas de saída separadas por vírgula.")
+    heart_notes = models.CharField(max_length=500, blank=True, help_text="Notas de corpo separadas por vírgula.")
+    base_notes = models.CharField(max_length=500, blank=True, help_text="Notas de fundo separadas por vírgula.")
+
+    class Meta:
+        verbose_name = "Perfume"
+        verbose_name_plural = "Perfumes"
+
+    def delete(self, *args, **kwargs):
+        if self.order_items.exists():
+            self.is_active = False
+            self.is_archived = True
+            self.save()
+        else:
+            super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return f"[{self.store.name}] {self.name}"
+
+
+class PriceHistory(models.Model):
+    """
+    Audit log architecture mapping every physical price alteration over time for platform analytics.
+    """
+    perfume = models.ForeignKey(Perfume, on_delete=models.CASCADE, related_name='price_logs')
+    old_price = models.DecimalField(max_digits=10, decimal_places=2)
+    new_price = models.DecimalField(max_digits=10, decimal_places=2)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Histórico de Preço"
+        verbose_name_plural = "Históricos de Preços"
+        ordering = ['-changed_at']
+
+    def __str__(self):
+        return f"{self.perfume.name}: R$ {self.old_price} → R$ {self.new_price}"
+
+
+class Review(models.Model):
+    """
+    Organic client feedback logs mapped directly across distinct database profiles.
+    """
+    perfume = models.ForeignKey(Perfume, on_delete=models.CASCADE, related_name='reviews')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_reviews')
+    rating = models.PositiveIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
+    comment = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Avaliação"
+        verbose_name_plural = "Avaliações"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.rating} Estrelas — {self.user.username} em ({self.perfume.name})"
+
+
+class Cart(models.Model):
+    """
+    Handles guest and authenticated user baskets.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name="carts")
+    session_key = models.CharField(max_length=40, null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        if self.user:
+            return f"Carrinho de: {self.user.username}"
+        return f"Carrinho Anônimo (Sessão: {self.session_key})"
+
+
+class CartItem(models.Model):
+    cart = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name="items")
+    perfume = models.ForeignKey(Perfume, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField(default=1)
+
+    def __str__(self):
+        return f"{self.quantity}x {self.perfume.name}"
+
+
+class Order(models.Model):
+    """
+    Immutable legal transaction ledger log. 
+    Tracks customer investments and automatically applies the 5% platform take rate.
+    """
+    user = models.ForeignKey(User, on_delete=models.PROTECT, related_name="core_orders")
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2)
+    axis_commission = models.DecimalField(max_digits=10, decimal_places=2, help_text="Taxa fixa de intermediação de 5%.")
+    total_paid = models.DecimalField(max_digits=10, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Pedido"
+        verbose_name_plural = "Pedidos"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Pedido #{self.id} — Cliente: {self.user.username}"
+
+
+class OrderItem(models.Model):
+    """
+    Historical item lookup preventing past price modifications from corrupting transaction reports.
+    """
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
+    perfume = models.ForeignKey(Perfume, on_delete=models.PROTECT, related_name="core_order_items")
+    historical_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Preço do item fixado no momento do checkout.")
+    quantity = models.PositiveIntegerField(default=1)
+
+    def __str__(self):
+        return f"{self.quantity}x {self.perfume.name} no Pedido #{self.order.id}"
+
+
+==================================================
+FILE: backend\core\serializers.py
+==================================================
+
+# src/core/serializers.py
+from rest_framework import serializers
+from rest_framework.exceptions import ValidationError
+from django.utils.text import slugify
+from django.db.models import Avg, Count
+from .models import Store, Category, Perfume, StoreEmployee, UserProfile, Review, Order, OrderItem
+
+"""
+Developer Note: English logs and metadata preserved for system configuration.
+All internal serialization layers aligned with real core models.
+User Interface / Error Messages: Kept entirely in Portuguese.
+Integration Patch: Explicitly bound nested reviews and multi-tenant store lookups to prevent front-end hydration cracks.
+"""
+
+class StoreSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Store
+        fields = '__all__'
+
+
+class CategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = '__all__'
+
+
+class ReviewFeedSerializer(serializers.ModelSerializer):
+    """
+    Serializer aninhado para alimentar o feed de auditoria e comentários do front-end.
+    """
+    username = serializers.CharField(source='user.username', read_only=True)
+    user = serializers.CharField(source='user.username', read_only=True) # Duplo mapeamento defensivo para o React
+
+    class Meta:
+        model = Review
+        fields = ['id', 'username', 'user', 'rating', 'comment', 'created_at']
+
+
+class PerfumeSerializer(serializers.ModelSerializer):
+    rating = serializers.SerializerMethodField()
+    review_count = serializers.SerializerMethodField()
+
+    store_name = serializers.CharField(source='store.name', read_only=True)
+    shopName = serializers.CharField(source='store.name', read_only=True)
+    reviews = ReviewFeedSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Perfume
+        fields = [
+            'id', 'store', 'store_name', 'shopName', 'name', 'slug', 'price', 'stock_quantity',
+            'image_url', 'description', 'is_active', 'categories',
+            'top_notes', 'heart_notes', 'base_notes', 'rating', 'review_count', 'reviews'
+        ]
+        read_only_fields = ['slug', 'rating', 'review_count', 'reviews']
+
+    def validate_stock_quantity(self, value):
+        if value < 0:
+            raise ValidationError("O estoque não pode ser negativo.")
+        return value
+
+    def get_rating(self, obj):
+        stats = obj.reviews.aggregate(avg_rating=Avg('rating'))
+        if stats['avg_rating']:
+            return round(stats['avg_rating'], 1)
+        return 0.0
+
+    def get_review_count(self, obj):
+        count = obj.reviews.aggregate(count=Count('id'))['count']
+        return count
+
+    def create(self, validated_data):
+        categories = validated_data.pop('categories', [])
+        instance = Perfume(**validated_data)
+        instance.slug = slugify(instance.name)
+        instance.save()
+        
+        if categories:
+            instance.categories.set(categories)
+        return instance
+
+    def update(self, instance, validated_data):
+        categories = validated_data.pop('categories', None)
+        
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+            
+        if 'name' in validated_data:
+            instance.slug = slugify(instance.name)
+            
+        instance.save()
+        
+        if categories is not None:
+            instance.categories.set(categories)
+        return instance
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    email = serializers.CharField(source='user.email', read_only=True)
+
+    class Meta:
+        model = UserProfile
+        fields = ['id', 'username', 'email', 'experience_level']
+
+
+class StoreEmployeeSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    email = serializers.CharField(source='user.email', read_only=True)
+
+    class Meta:
+        model = StoreEmployee
+        fields = ['id', 'store', 'username', 'email', 'role', 'created_at']
+
+
+class ProfileOrderItemSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source='perfume.name', read_only=True)
+    image_url = serializers.URLField(source='perfume.image_url', read_only=True)
+    store_name = serializers.CharField(source='perfume.store.name', read_only=True)
+    perfume_id = serializers.IntegerField(source='perfume.id', read_only=True)
+
+    class Meta:
+        model = OrderItem
+        fields = ['id', 'perfume_id', 'name', 'image_url', 'store_name', 'historical_price', 'quantity']
+
+class CompleteCustomerProfileSerializer(serializers.ModelSerializer):
+    """
+    Unified serialization engine mapping user profile audit indicators, 
+    historical checkout items, and multi-tenant store owner flags.
+    """
+    name = serializers.CharField(source='user.first_name', read_only=True) # <--- CAPTURA O NOME REAL DO USUÁRIO
+    nickname = serializers.CharField(source='user.username')
+    email = serializers.CharField(source='user.email', read_only=True)
+    experience_level = serializers.CharField(read_only=True)
+    
+    # Audit Aggregations directly from DB
+    total_orders = serializers.SerializerMethodField()
+    total_invested = serializers.SerializerMethodField()
+    
+    # Check if user owns a store or is an employee to unlock Merchant features
+    is_merchant = serializers.SerializerMethodField()
+    managed_stores = serializers.SerializerMethodField()
+    
+    # Historical purchase ledger nodes
+    orders = serializers.SerializerMethodField()
+
+    class Meta:
+        model = UserProfile
+        fields = [
+            'id', 'name', 'nickname', 'email', 'date_joined', 'experience_level', 
+            'total_orders', 'total_invested', 'is_merchant', 'managed_stores', 'orders'
+        ] # <--- ADICIONADO 'name' NA TUPLA DE CAMPOS
+
+    def get_total_orders(self, obj):
+        return Order.objects.filter(user=obj.user).count()
+
+    def get_total_invested(self, obj):
+        from django.db.models import Sum
+        total = Order.objects.filter(user=obj.user).aggregate(total=Sum('total_paid'))['total']
+        return round(total, 2) if total else 0.00
+
+    def get_is_merchant(self, obj):
+        return obj.user.owned_stores.filter(status='APPROVED').exists() or obj.user.store_employments.exists()
+
+    def get_managed_stores(self, obj):
+        stores = Store.objects.filter(merchant=obj.user)
+        return [{'id': s.id, 'name': s.name, 'slug': s.slug, 'status': s.status} for s in stores]
+
+    def get_orders(self, obj):
+        items = OrderItem.objects.filter(order__user=obj.user).select_related('perfume', 'perfume__store').order_by('-order__created_at')
+        return ProfileOrderItemSerializer(items, many=True).data
+
+
+==================================================
+FILE: backend\core\signals.py
+==================================================
+
+# src/core/signals.py
+from django.db.models.signals import pre_save, post_save
+from django.dispatch import receiver
+from django.core.exceptions import ValidationError
+from django.contrib.auth.models import User
+from .models import Perfume, UserProfile, PriceHistory
+
+@receiver(pre_save, sender=Perfume)
+def handle_perfume_mutations(sender, instance, **kwargs):
+    """
+    Validation and Audit Pipeline:
+    1. Prevents negative stock (Data Integrity).
+    2. Logs price history mutations for future analytics (Audit Trail).
+    """
+    # 1. Negative Stock Mesh
+    if instance.stock_quantity < 0:
+        raise ValidationError("O estoque não pode ser negativo.")
+
+    # 2. Price History Audit Trail
+    if instance.pk:  # Only update history if the record already exists
+        try:
+            old_instance = Perfume.objects.get(pk=instance.pk)
+            if old_instance.price != instance.price:
+                PriceHistory.objects.create(
+                    perfume=instance,
+                    old_price=old_instance.price,
+                    new_price=instance.price
+                )
+        except Perfume.DoesNotExist:
+            # New instance being saved, skip audit log
+            pass
+
+@receiver(post_save, sender=User)
+def create_user_profile(sender, instance, created, **kwargs):
+    """
+    Identity bootstrap: Automatically spawns a UserProfile whenever 
+    a new core User account is registered in the system.
+    """
+    if created:
+        UserProfile.objects.create(user=instance)
+
+
+==================================================
+FILE: backend\core\urls.py
+==================================================
+
+# src/core/urls.py
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from rest_framework_simplejwt.views import TokenBlacklistView
+from .views import (
+    PerfumeViewSet, 
+    CategoryViewSet, 
+    CustomTokenObtainPairView, 
+    CustomTokenRefreshView, 
+    NetworkStatsView,
+    StoreRegisterView,
+    CheckoutView,
+    UserRegisterView,
+    UserProfileDetailView  # Injeção direta da view de perfil real
+)
+
+"""
+Developer Note: Core routing layer for the Axis ecosystem.
+Standardized endpoints for catalog operations, authentication, and platform analytics.
+Added operational endpoints for merchant registration validation and atomic checkouts.
+"""
+
+router = DefaultRouter()
+router.register(r'perfumes', PerfumeViewSet, basename='perfume')
+router.register(r'categorias', CategoryViewSet, basename='categoria')
+
+urlpatterns = [
+    # API Catalog Routes (Relative path)
+    path('', include(router.urls)),
+
+    # Authentication and Identity Endpoints
+    path('autenticacao/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('autenticacao/atualizar/', CustomTokenRefreshView.as_view(), name='token_refresh'),
+    path('usuarios/registrar/', UserRegisterView.as_view(), name='user-register'),
+    path('usuarios/perfil/', UserProfileDetailView.as_view(), name='user-profile'), # Rota do painel de custódia
+    path('logout/', TokenBlacklistView.as_view(), name='token_blacklist'),
+
+    # Operational Intelligence Endpoints
+    path('estatisticas/', NetworkStatsView.as_view(), name='network-stats'),
+
+    # Merchant Validation & Onboarding Endpoints
+    path('lojista/registrar/', StoreRegisterView.as_view(), name='store-register'),
+
+    # Transactional Financial Checkout Endpoints
+    path('checkout/', CheckoutView.as_view(), name='core-checkout'),
+]
+
+
+==================================================
+FILE: backend\core\views.py
+==================================================
+
+# src/core/views.py
+from django.db import models, transaction
+from django.db.models import Avg
+from django.contrib.auth.models import User
+from rest_framework import viewsets, status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticated
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+
+from .models import Perfume, Category, Review, UserProfile, Store, Order, OrderItem
+from .serializers import PerfumeSerializer, CategorySerializer, StoreSerializer, CompleteCustomerProfileSerializer
+
+from decimal import Decimal
+
+"""
+  Developer Note: Core business views layer for Axis multi-tenant catalog architecture.
+  System operations, token exceptions, transactional mutations, and database queries are managed in English.
+  User-facing payloads, warning structures, and error blocks are rendered strictly in Portuguese.
+"""
+
+class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Exposes active categories for the interface.
+    """
+    queryset = Category.objects.all()
+    serializer_class = CategorySerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+
+class PerfumeViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Exposes the active catalog to the frontend.
+    Read-only operations to prevent unauthorized inventory mutations.
+    Filters products so consumers only see items from APPROVED stores.
+    """
+    queryset = Perfume.objects.filter(is_active=True, is_archived=False, store__status='APPROVED')
+    serializer_class = PerfumeSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def get_serializer_context(self):
+        return {'request': self.request}
+
+    def get_queryset(self):
+        """
+        Dynamically filters active perfumes from approved stores to avoid server caching issues.
+        Includes filter for is_archived=False to respect the Soft-Delete policy.
+        """
+        return Perfume.objects.filter(is_active=True, is_archived=False, store__status='APPROVED')
+
+
+class NetworkStatsView(APIView):
+    """
+    Computes aggregate metrics across the approved store catalog ecosystem.
+    Delivers dynamic platform metrics including live rating aggregations from the Review model.
+    """
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def get(self, request, *args, **kwargs):
+        # 1. Dynamic Perfume Count from approved stores
+        total_perfumes = Perfume.objects.filter(is_active=True, is_archived=False, store__status='APPROVED').count()
+        
+        # 2. Dynamic Store/Workshop Count
+        total_stores = Store.objects.filter(status='APPROVED').count()
+
+        # 3. Safe computational rating layer fetching real review data
+        stats = Review.objects.aggregate(average=Avg('rating'))
+        avg_val = stats.get('average')
+        formatted_rating = f"{round(avg_val, 1)}★" if avg_val else "4.8★"
+
+        return Response(
+            {
+                "average_rating": formatted_rating,
+                "ingredients_percentage": "100%",
+                "maceration_hours": "48h",
+                "perfumes_count": f"{total_perfumes}+" if total_perfumes > 0 else "0+",
+                "collections_count": f"{total_stores}",
+                "appreciators_count": "40K+"
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    """
+    Custom view to handle user login and return JWT tokens with localized messages.
+    """
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+
+        try:
+            serializer.is_valid(raise_exception=True)
+        except TokenError as e:
+            raise InvalidToken(e.args[0])
+        except Exception:
+            return Response(
+                {"erro": "Credenciais inválidas. Verifique seu usuário e senha."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        return Response(serializer.validated_data, status=status.HTTP_200_OK)
+
+
+class CustomTokenRefreshView(TokenRefreshView):
+    """
+    Custom view to handle access token renewal using a valid refresh token.
+    """
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+
+        try:
+            serializer.is_valid(raise_exception=True)
+        except TokenError:
+            return Response(
+                {"erro": "Sessão expirada ou token inválido. Por favor, faça login novamente."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        return Response(serializer.validated_data, status=status.HTTP_200_OK)
+
+
+class StoreRegisterView(APIView):
+    """
+    Handles multi-step onboarding data ingestion for merchant workshops.
+    Forces status to PENDING to trigger criminal background and identity validation queues.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        
+        # Guard clause preventing multiple store allocations per account node
+        if Store.objects.filter(merchant=user).exists():
+            return Response(
+                {"erro": "Este usuário já possui uma oficina ou rascunho de loja cadastrado."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        serializer = StoreSerializer(data=request.data)
+        if serializer.is_valid():
+            # Force integrity state transitions outside client parameter pollution
+            store = serializer.save(
+                merchant=user,
+                status='PENDING',
+                triaged_at=None,
+                rejection_reason=None
+            )
+            return Response(
+                {
+                    "mensagem": "Dados de conformidade recebidos. Loja enviada para triagem de segurança.",
+                    "status": store.get_status_display()
+                },
+                status=status.HTTP_201_CREATED
+            )
+            
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CheckoutView(APIView):
+    """
+    High-integrity transactional payment processor.
+    Uses database-level concurrency blocks to guarantee anti-fraud inventory safety bounds.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        items_data = request.data.get('items', [])
+
+        if not items_data:
+            return Response(
+                {"erro": "O carrinho de compras não possui itens válidos para processamento."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        computed_subtotal = Decimal("0.00")
+        order_items_to_create = []
+        perfumes_to_update = []
+
+        # Phase 1: Operational Verification & Stock Reservation Lock
+        for item in items_data:
+            perfume_id = item.get('perfume_id')
+            requested_qty = int(item.get('quantity', 1))
+
+            if requested_qty <= 0:
+                return Response(
+                    {"erro": "A quantidade de itens solicitada deve ser maior que zero."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            try:
+                # select_for_update establishes row locks preventing concurrent racing mutations
+                perfume = Perfume.objects.select_for_update().get(id=perfume_id, is_active=True, is_archived=False)
+            except Perfume.DoesNotExist:
+                return Response(
+                    {"erro": f"Fragrância ID {perfume_id} não está disponível ou foi desativada do acervo."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            if perfume.stock_quantity < requested_qty:
+                return Response(
+                    {"erro": f"Falha de inventário: '{perfume.name}' possui apenas {perfume.stock_quantity} unidades em estoque."},
+                    status=status.HTTP_409_CONFLICT
+                )
+
+            # Compute local finance ledger states
+            item_cost = perfume.price * requested_qty
+            computed_subtotal += item_cost
+
+            # Stage operational mutations for secondary validation phase
+            perfume.stock_quantity -= requested_qty
+            perfumes_to_update.append(perfume)
+
+            order_items_to_create.append({
+                'perfume': perfume,
+                'historical_price': perfume.price,
+                'quantity': requested_qty
+            })
+
+        # Phase 2: Compute Commission Metrics (Axis 5% Take Rate)
+        commission_coefficient = Decimal("0.05")
+        axis_share = (computed_subtotal * commission_coefficient).quantize(Decimal("0.01"))
+        gross_total = computed_subtotal
+
+        # Phase 3: Physical Database Persistence
+        order = Order.objects.create(
+            user=user,
+            subtotal=computed_subtotal,
+            axis_commission=axis_share,
+            total_paid=gross_total
+        )
+
+        # Bulk write historical records to minimize analytical connection overhead
+        for item_blueprint in order_items_to_create:
+            OrderItem.objects.create(
+                order=order,
+                perfume=item_blueprint['perfume'],
+                historical_price=item_blueprint['historical_price'],
+                quantity=item_blueprint['quantity']
+            )
+
+        # Fire state serialization writes down the pipeline
+        for perfume in perfumes_to_update:
+            perfume.save()
+
+        return Response(
+            {
+                "mensagem": "Investimento processado e faturado com sucesso.",
+                "pedido_id": order.id,
+                "subtotal": f"R$ {order.subtotal}",
+                "taxa_intermediacao": f"R$ {order.axis_commission}",
+                "total_pago": f"R$ {order.total_paid}"
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
+class UserRegisterView(APIView):
+    """
+    Registra usuários padrão. Cria User e UserProfile associado.
+    """
+    def post(self, request, *args, **kwargs):
+        data = request.data
+        if not data.get('email') or not data.get('password'):
+            return Response({"error": "Dados incompletos"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if User.objects.filter(username=data['email']).exists():
+            return Response({"error": "Usuário já existe"}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = User.objects.create_user(
+            username=data['email'],
+            email=data['email'],
+            password=data['password'],
+            first_name=data.get('name', '')
+        )
+        UserProfile.objects.get_or_create(user=user)
+
+        return Response({"message": "Usuário criado com sucesso"}, status=status.HTTP_201_CREATED)
+
+
+class UserProfileDetailView(APIView):
+    """
+    Developer Note: Internal endpoint to fetch full audit aggregates and historical 
+    checkout ledger nodes for the currently authenticated session owner.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # Busca o perfil de forma segura; se não existir por algum motivo, cria defensivamente
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        serializer = CompleteCustomerProfileSerializer(profile, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+==================================================
+FILE: backend\core\__init__.py
+==================================================
+
+
+
+==================================================
+FILE: backend\payments\admin.py
+==================================================
+
+from django.contrib import admin
+from .models import Order, OrderItem
+
+
+class OrderItemInline(admin.TabularInline):
+    """
+    Allows the administrator to view and manage items directly inside the Order detail page.
+    """
+    model = OrderItem
+    extra = 0
+    # Using raw_id_fields to avoid loading a massive dropdown of perfumes in production
+    raw_id_fields = ['perfume']
+
+    # Translating headers for the administrative end-user interface
+    verbose_name = "Item do Pedido"
+    verbose_name_plural = "Itens do Pedido"
+
+
+@admin.register(Order)
+class OrderAdmin(admin.ModelAdmin):
+    """
+    Administrative interface configuration for financial Order records.
+    """
+    list_display = ['id', 'user', 'total_amount', 'status', 'payment_method', 'transaction_id', 'created_at']
+    list_filter = ['status', 'payment_method', 'created_at']
+    search_fields = ['id', 'transaction_id', 'user__username', 'user__email']
+    list_editable = ['status']
+    date_hierarchy = 'created_at'
+    inlines = [OrderItemInline]
+
+    # Grouping fields cleanly in the detail form edit view
+    fieldsets = (
+        ('Informação do Cliente', {
+            'fields': ('user',)
+        }),
+        ('Detalhes Financeiros', {
+            'fields': ('total_amount', 'status', 'payment_method')
+        }),
+        ('Integração com o Gateway', {
+            'fields': ('transaction_id', 'failure_reason'),
+            'classes': ('collapse',), # Collapses the section to keep the UI clean
+        }),
+    )
+
+
+==================================================
+FILE: backend\payments\apps.py
+==================================================
+
+from django.apps import AppConfig
+
+
+class PaymentsConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'payments'
+    verbose_name = 'Gestão de Pagamentos' # Display name in admin panel
+
+    def ready(self):
+        # Imports the signals pipeline implicitly during registry initialization
+        import payments.signals
+
+
+==================================================
+FILE: backend\payments\models.py
+==================================================
+
+from django.db import models
+from django.contrib.auth.models import User
+
+
+class Order(models.Model):
+    """
+    Represents the core financial transaction record for a user checkout session.
+    Tracks state transitions and final settlement values.
+    """
+    STATUS_CHOICES = [
+          ('PENDING', 'Pendente de Pagamento'),
+          ('PROCESSING', 'Processando / Em Análise'),
+          ('PAID', 'Pago / Aprovado'),
+          ('CANCELLED', 'Cancelado'),
+          ('REFUNDED', 'Reembolsado'),
+    ]
+
+    METHOD_CHOICES = [
+        ('CREDIT_CARD', 'Cartão de Crédito'),
+        ('PIX', 'Pix'),
+        ('BOLETO', 'Boleto Bancário'),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.PROTECT, related_name="orders", blank=True, null=True)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='PENDING')
+    payment_method = models.CharField(max_length=15, choices=METHOD_CHOICES)
+    transaction_id = models.CharField(max_length=255, unique=True, blank=True, null=True)
+    failure_reason = models.TextField(blank=True, null=True, help_text="Motivo de falha enviado pelo gateway se o pagamento for recusado.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Pedido"
+        verbose_name_plural = "Pedidos"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Pedido #{self.id} - [{self.get_status_display()}] - R$ {self.total_amount}"
+
+
+class OrderItem(models.Model):
+    """
+    Snapshot of a product transaction at the exact moment of purchase.
+    Preserves audit data independently of product model mutations.
+    """
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
+    perfume = models.ForeignKey('core.Perfume', on_delete=models.PROTECT, related_name="order_items")
+    quantity = models.PositiveIntegerField(default=1)
+    price_at_purchase = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        verbose_name = "Item do Pedido"
+        verbose_name_plural = "Itens do Pedido"
+
+    def __str__(self):
+        return f"{self.quantity}x {self.perfume.name} (R$ {self.price_at_purchase})"
+
+
+==================================================
+FILE: backend\payments\serializers.py
+==================================================
+
+from rest_framework import serializers
+from .models import Order, OrderItem
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    """
+    Handles the nested items within an Order snapshot.
+    """
+    class Meta:
+        model = OrderItem
+        fields = ['perfume', 'quantity', 'price_at_purchase']
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    """
+    Validates and serializes the checkout session data.
+    """
+    items = OrderItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Order
+        fields = ['id', 'user', 'total_amount', 'status', 'payment_method', 'transaction_id', 'items', 'created_at']
+
+    def validate_total_amount(self, value):
+        """
+        Prevents tampering with the payload total amount.
+        """
+        if value <= 0:
+            raise serializers.ValidationError("O valor total do pedido deve ser maior que zero.")
+        return value
+
+
+==================================================
+FILE: backend\payments\signals.py
+==================================================
+
+from django.db import transaction
+from django.db.models.signals import pre_save
+from django.dispatch import receiver
+from django.core.exceptions import ValidationError
+from .models import Order
+
+
+@receiver(pre_save, sender=Order)
+def process_inventory_on_payments(sender, instance, **kwargs):
+    """
+    Listens to Order state transitions via pre_save. When an order shifts to 'PAID',
+    it safely decrements stock levels inside the core app, preventing negative levels.
+    """
+    # Check if this is an update to an existing order, not a new creation
+    if instance.pk:
+        # Fetch the exact state currently saved in the database before the memory overwrite
+        previous_state = Order.objects.get(pk=instance.pk)
+        
+        # Trigger inventory updates ONLY when shifting from any other status to 'PAID'
+        if previous_state.status != 'PAID' and instance.status == 'PAID':
+            
+            # Open an atomic database transaction block to secure row-level locking
+            with transaction.atomic():
+                # We iterate through items but safely fetch and LOCK each perfume row individually
+                for item in instance.items.all():
+                    # Importing inside the signal context to prevent any app registry circular bugs
+                    from backend.core.models import Perfume
+                    
+                    # select_for_update locks the row until the end of this atomic block
+                    perfume = Perfume.objects.select_for_update().get(pk=item.perfume_id)
+                    
+                    # Critical business check to prevent negative inventory levels
+                    if perfume.stock_quantity < item.quantity:
+                        raise ValidationError(
+                            f"Estoque insuficiente para o perfume '{perfume.name}'. "
+                            f"Disponível: {perfume.stock_quantity}, Solicitado: {item.quantity}."
+                        )
+                    
+                    # Atomically decrement the inventory levels safely before the order changes state
+                    perfume.stock_quantity -= item.quantity
+                    perfume.save(update_fields=['stock_quantity'])
+
+
+==================================================
+FILE: backend\payments\urls.py
+==================================================
+
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import OrderViewSet, MockWebhookView
+
+
+router = DefaultRouter()
+router.register(r'orders', OrderViewSet, basename='order')
+
+urlpatterns = [
+    path('', include(router.urls)),
+
+    path('webhook/mock/', MockWebhookView.as_view(), name='mock-webhook'),
+]
+
+
+==================================================
+FILE: backend\payments\views.py
+==================================================
+
+from rest_framework import viewsets, status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from django.core.exceptions import ValidationError
+from .models import Order
+from .serializers import OrderSerializer
+from audit.models import WebhookLog # Core architecture verification
+
+
+class OrderViewSet(viewsets.ModelViewSet):
+    """
+    Manages user checkout sessions and order state tracking.
+    """
+    serializer_class = OrderSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        Filters orders so users can only access their own data.
+        """
+        return Order.objects.filter(user=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        """
+        Intercepts the POST request to construct the order properly.
+        """
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            self.perform_create(serializer)
+            return Response(
+                {"mensagem": "Pedido iniciado com sucesso. Aguardando pagamento.", "dados": serializer.data},
+                status=status.HTTP_201_CREATED
+            )
+
+        return Response(
+            {"erro": "Falha na validação dos dados do pedido.", "detalhes": serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+
+class MockWebhookView(APIView):
+    """
+    Simulates an incoming webhook request from Mercado Pago for development/academic evaluation.
+    Bypasses authentication as external webhooks do not possess user tokens.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        """
+        Intercepts the simulated payload, updates the order status, and writes to the audit log.
+        """
+        payload = request.data
+        order_id = payload.get("order_id")
+
+        try:
+            order = Order.objects.get(id=order_id)
+
+            # Mutates the state to paid
+            order.status = 'PAID'
+            order.save()
+
+            # Writes the untampered payload to the system's black box
+            WebhookLog.objects.create(
+                provider='MERCADO_PAGO',
+                event_type='mock.payment.approved',
+                raw_payload=payload,
+                order_id=order.id,
+                is_processed=True
+            )
+
+            return Response(
+                {"mensagem": f"Pagamento simulado aprovado. Pedido #{order.id} atualizado."},
+                status=status.HTTP_200_OK
+            )
+
+        except ValidationError as e:
+            # Captures the exception raised by your pre_save signal if stock is insufficient
+            return Response(
+                {"erro": "Falha no processamento do estoque para o pedido.", "detalhes": e.message},
+                status=status.HTTP_409_CONFLICT
+            )
+        except Order.DoesNotExist:
+            return Response(
+                {"erro": "Pedido não encontrado no banco de dados."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+
+==================================================
+FILE: backend\payments\__init__.py
+==================================================
+
+
+
+==================================================
+FILE: backend\scenthub_project\asgi.py
+==================================================
+
+"""
+ASGI config for scenthub_project project.
+
+It exposes the ASGI callable as a module-level variable named ``application``.
+
+For more information on this file, see
+https://docs.djangoproject.com/en/6.0/howto/deployment/asgi/
+"""
+
+import os
+
+from django.core.asgi import get_asgi_application
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'scenthub_project.settings')
+
+application = get_asgi_application()
+
+
+==================================================
+FILE: backend\scenthub_project\settings.py
+==================================================
+
+# backend/scenthub_project/settings.py
+import os
+from dotenv import load_dotenv
+from pathlib import Path
+from datetime import timedelta
+
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+# Quick-start development settings - unsuitable for production
+# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
+
+load_dotenv(dotenv_path=BASE_DIR / '.env')
+
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = os.getenv('SECRET_KEY')
+
+# SECURITY WARNING: don't run with debug turned on in production!
+DEBUG = os.getenv('DEBUG', 'False') == 'True'
+
+ALLOWED_HOSTS = []
+
+
+# Application definition
+
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+
+    # Framework Packages
+    'rest_framework',
+    'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
+    'corsheaders',
+
+    # System Domain Apps
+    'core',
+    'payments',
+    'audit',
+]
+
+MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',  # Developer Note: Placed at the top to intercept browser flight hooks
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+
+ROOT_URLCONF = 'scenthub_project.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = 'scenthub_project.wsgi.application'
+
+
+# Database
+# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
+}
+
+
+# Password validation
+# https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
+
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+    },
+]
+
+# JWT configuration for secure authentication
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'UPDATE_LAST_LOGIN': True,
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
+}
+
+# ==============================================================================
+# SECURITY & API CONFIGURATION (CORS & DRF SETUP)
+# ==============================================================================
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",  # Default Vite server port (React/Vue)
+    "http://127.0.0.1:5173",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+    # Developer Note: Global pagination unlinked to prevent structural mapping crashes inside the React core client array
+}
+
+
+# Internationalization
+# https://docs.djangoproject.com/en/6.0/topics/i18n/
+
+LANGUAGE_CODE = 'en-us'
+
+TIME_ZONE = 'UTC'
+
+USE_I18N = True
+
+USE_TZ = True
+
+
+# Static files (CSS, JavaScript, Images)
+# https://docs.djangoproject.com/en/6.0/howto/static-files/
+
+STATIC_URL = 'static/'
+
+
+==================================================
+FILE: backend\scenthub_project\urls.py
+==================================================
+
+from django.contrib import admin
+from django.urls import path, include
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+
+    path('api/core/', include('core.urls')),
+    path('api/payments/', include('payments.urls')),
+    path('api/audit/', include('audit.urls')),
+]
+
+
+==================================================
+FILE: backend\scenthub_project\wsgi.py
+==================================================
+
+"""
+WSGI config for scenthub_project project.
+
+It exposes the WSGI callable as a module-level variable named ``application``.
+
+For more information on this file, see
+https://docs.djangoproject.com/en/6.0/howto/deployment/wsgi/
+"""
+
+import os
+
+from django.core.wsgi import get_wsgi_application
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'scenthub_project.settings')
+
+application = get_wsgi_application()
+
+
+==================================================
+FILE: backend\scenthub_project\__init__.py
+==================================================
+
+
+
+==================================================
+FILE: backend\core\management\__init__.py
+==================================================
+
+
+
+==================================================
+FILE: backend\core\management\commands\popular_catalogo.py
+==================================================
+
+# core/management/commands/popular_catalogo.py
+from django.core.management.base import BaseCommand
+from django.contrib.auth.models import User
+from django.utils.text import slugify
+from core.models import Store, Category, Perfume, Review
+
+"""
+Developer Note: Automated data ingestion script for catalog setup.
+System operations, logs, and class structures are documented in English.
+User Interface / Output Messages: Kept entirely in Portuguese.
+Verification: Injects real olfactory matrix text and organic review testing ledgers.
+"""
+
+class Command(BaseCommand):
+    help = "Populates the database with initial standard store, categories, perfumes, and testing reviews."
+
+    def handle(self, *args, **options):
+        self.stdout.write(self.style.WARNING("Iniciando a população do catálogo Axis..."))
+
+        # 1. Guarantee a Master Administrator/Merchant exists to own the store
+        admin_user, created = User.objects.get_or_create(
+            username="admin_your_essence",
+            defaults={"is_staff": True, "is_superuser": True}
+        )
+        if created:
+            admin_user.set_password("SenhaMestre123!")
+            admin_user.save()
+
+        # Create dummy buyer accounts for organic review simulation
+        buyer_lucas, _ = User.objects.get_or_create(username="lucas_pereira", defaults={"email": "lucas@axis.com"})
+        buyer_mariana, _ = User.objects.get_or_create(username="mariana_costa", defaults={"email": "mariana@axis.com"})
+
+        # 2. Spawn the Core Marketplace Store in APPROVED status
+        store, _ = Store.objects.get_or_create(
+            slug="your-essence-prime",
+            defaults={
+                "name": "Your Essence Prime",
+                "description": "Loja principal de fragrâncias e contratipos premium.",
+                "merchant": admin_user,
+                "status": "APPROVED"
+            }
+        )
+
+        # 3. Create Categories (limpo, sem ui_target)
+        cat_data = [
+            {"name": "Frescor do Dia", "slug": "frescor-do-dia"},
+            {"name": "Encontro Romântico", "slug": "encontro-romantico"},
+            {"name": "Floral Amadeirado", "slug": "floral-amadeirado"},
+            {"name": "Oriental Especiado", "slug": "oriental-especiado"},
+            {"name": "Uso Geral", "slug": "uso-geral"},
+        ]
+
+        categories_dict = {}
+        for cat in cat_data:
+            category, _ = Category.objects.get_or_create(
+                slug=cat["slug"],
+                defaults={"name": cat["name"]}
+            )
+            categories_dict[cat["slug"]] = category
+
+        # 4. Core Perfumes Catalog Dataset (Atualizado para o novo modelo)
+        perfumes_dataset = [
+            {
+                "name": "Essence Sauvage",
+                "price": 189.90,
+                "stock_quantity": 45,
+                "image_url": "https://images.unsplash.com/photo-1541643600914-78b084683601",
+                "description": "Fragrância masculina marcante com notas de bergamota da calábria e ambroxan.",
+                "top_notes": "Bergamota da Calábria, Pimenta de Szechuan",
+                "heart_notes": "Luz de Lavanda, Pimenta Rosa, Elemi",
+                "base_notes": "Ambroxan, Cedro Nobre, Labdanum",
+                "cats": ["frescor-do-dia", "uso-geral"],
+                "reviews": [
+                    {"user": buyer_lucas, "rating": 5, "comment": "Projeção limpa de Ambroxan. Acabamento de altíssimo nível para o dia a dia."},
+                    {"user": buyer_mariana, "rating": 4, "comment": "Saída cítrica muito pungente. Na minha pele fixou por cerca de 8h tranquilamente."}
+                ]
+            },
+            {
+                "name": "Nuit Seduction",
+                "price": 210.00,
+                "stock_quantity": 30,
+                "image_url": "https://images.unsplash.com/photo-1594035910387-fea47794261f",
+                "description": "Fragrância intensa e misteriosa com acordes doces de baunilha e especiarias de fundo.",
+                "top_notes": "Cardamomo, Especiarias Frias",
+                "heart_notes": "Lavanda Absoluta, Íris da Toscana",
+                "base_notes": "Baunilha Preta, Cumaru, Couro Russo",
+                "cats": ["encontro-romantico", "oriental-especiado"],
+                "reviews": [
+                    {"user": buyer_lucas, "rating": 5, "comment": "Perfume absurdamente sedutor. Baunilha densa sem ser enjoativa."},
+                ]
+            },
+            {
+                "name": "Bleu Absolute",
+                "price": 195.50,
+                "stock_quantity": 25,
+                "image_url": "https://images.unsplash.com/photo-1523293182086-7651a899d37f",
+                "description": "Um tributo à liberdade masculina em uma fragrância amadeirada aromática de rastro cativante.",
+                "top_notes": "Toranja da Calábria, Hortelã Fresca, Pimenta Rosa",
+                "heart_notes": "Noz-moscada, Gengibre de Madagascar, Jasmim Hidropônico",
+                "base_notes": "Incenso Incandescente, Cedro Seco, Sândalo, Patchouli",
+                "cats": ["uso-geral", "floral-amadeirado"],
+                "reviews": [
+                    {"user": buyer_mariana, "rating": 5, "comment": "Extremamente versátil, elegante e elogiado. Uma joia amadeirada."}
+                ]
+            }
+        ]
+
+        # 5. Commit items to database and attach relationships
+        for p_info in perfumes_dataset:
+            perfume, created = Perfume.objects.get_or_create(
+                slug=slugify(p_info["name"]),
+                defaults={
+                    "store": store,
+                    "name": p_info["name"],
+                    "price": p_info["price"],
+                    "stock_quantity": p_info["stock_quantity"],
+                    "image_url": p_info["image_url"],
+                    "description": p_info["description"],
+                    "top_notes": p_info["top_notes"],
+                    "heart_notes": p_info["heart_notes"],
+                    "base_notes": p_info["base_notes"],
+                    "is_active": True
+                }
+            )
+            
+            # Se o registro já existia, atualiza os dados
+            if not created:
+                perfume.description = p_info["description"]
+                perfume.top_notes = p_info["top_notes"]
+                perfume.heart_notes = p_info["heart_notes"]
+                perfume.base_notes = p_info["base_notes"]
+                perfume.price = p_info["price"]
+                perfume.image_url = p_info["image_url"]
+                perfume.save()
+
+            # Link relationship between perfume and its categories safely
+            for cat_slug in p_info["cats"]:
+                perfume.categories.add(categories_dict[cat_slug])
+            
+            # Injetar avaliações falsas
+            for r_info in p_info["reviews"]:
+                Review.objects.get_or_create(
+                    perfume=perfume,
+                    user=r_info["user"],
+                    defaults={
+                        "rating": r_info["rating"],
+                        "comment": r_info["comment"]
+                    }
+                )
+
+            perfume.save()
+
+        self.stdout.write(self.style.SUCCESS("Banco de dados populado, notas preenchidas e reviews sincronizadas com sucesso!"))
+
+
+==================================================
+FILE: backend\core\management\commands\__init__.py
+==================================================
+
+
