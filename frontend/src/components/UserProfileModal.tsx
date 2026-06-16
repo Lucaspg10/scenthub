@@ -1,5 +1,6 @@
 // src/components/UserProfileModal.tsx
 import { useState, useEffect } from "react";
+// @ts-ignore
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
