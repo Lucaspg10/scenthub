@@ -157,7 +157,7 @@ export function Header({
         <div className="max-w-[1440px] mx-auto px-6 md:px-12 h-16 md:h-[72px] flex items-center justify-between gap-8">
 
           {/* ── Left Navigation Links ──────────────────────────────────── */}
-          <nav className="hidden md:flex items-center gap-10 flex-1">
+          <nav className="hidden lg:flex items-center gap-10 flex-1">
             {/* FIX 1 (Desktop): "Perfumes" now calls onSearchOpen() to open the catalog overlay */}
             <button
               type="button"
@@ -207,7 +207,7 @@ export function Header({
             {/* 2. Avatar / Account (desktop only) */}
             <button
               onClick={handleAvatarClick}
-              className="transition-colors duration-300 hidden md:flex items-center justify-center p-1 text-[#A39683] hover:text-[#F2EDE4] bg-transparent border-none outline-none cursor-pointer"
+              className="transition-colors duration-300 hidden lg:flex items-center justify-center p-1 text-[#A39683] hover:text-[#F2EDE4] bg-transparent border-none outline-none cursor-pointer"
               aria-label="Meu Perfil"
             >
               {isAuthenticated && userInitial ? (
@@ -249,7 +249,7 @@ export function Header({
             {isAuthenticated && (
               <button
                 onClick={onLogout}
-                className="transition-colors duration-300 hidden md:block p-1 text-[#A39683] hover:text-red-400 bg-transparent border-none outline-none cursor-pointer"
+                className="transition-colors duration-300 hidden lg:block p-1 text-[#A39683] hover:text-red-400 bg-transparent border-none outline-none cursor-pointer"
                 aria-label="Sair da Conta"
               >
                 <LogOut size={21} strokeWidth={2} />
@@ -258,7 +258,7 @@ export function Header({
 
             {/* Mobile hamburger */}
             <button
-              className="md:hidden transition-colors duration-300 p-1 text-[#A39683] hover:text-[#F2EDE4] bg-transparent border-none outline-none cursor-pointer"
+              className="lg:hidden transition-colors duration-300 p-1 text-[#A39683] hover:text-[#F2EDE4] bg-transparent border-none outline-none cursor-pointer"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               aria-label="Menu"
             >
@@ -389,7 +389,7 @@ export function Header({
             animate={{ x: 0 }}
             exit={{ x: "100%" }}
             transition={{ type: "tween", duration: 0.35 }}
-            className="fixed inset-0 z-40 bg-[#0C0B09] pt-20 px-8 md:hidden"
+            className="fixed inset-0 z-40 bg-[#0C0B09] pt-20 pb-8 px-8 overflow-y-auto lg:hidden"
           >
             <nav className="flex flex-col gap-8 mt-8">
               {/* FIX 1 (Mobile): "Perfumes" now also calls onSearchOpen() */}
