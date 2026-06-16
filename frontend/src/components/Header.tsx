@@ -157,12 +157,11 @@ export function Header({
         <div className="max-w-[1440px] mx-auto px-6 md:px-12 h-16 md:h-[72px] flex items-center justify-between gap-8">
 
           {/* ── Left Navigation Links ──────────────────────────────────── */}
-          <nav className="hidden lg:flex items-center gap-10 flex-1">
-            {/* FIX 1 (Desktop): "Perfumes" now calls onSearchOpen() to open the catalog overlay */}
+          <nav className="hidden md:flex items-center gap-4 lg:gap-10 flex-1">
             <button
               type="button"
               onClick={handlePerfumesClick}
-              className="text-[14px] tracking-[0.15em] uppercase font-semibold transition-colors duration-300 bg-transparent border-none outline-none cursor-pointer p-0 text-[#A39683] hover:text-[#F2EDE4]"
+              className="text-[13px] lg:text-[14px] tracking-[0.1em] lg:tracking-[0.15em] uppercase font-semibold transition-colors duration-300 bg-transparent border-none outline-none cursor-pointer p-0 text-[#A39683] hover:text-[#F2EDE4] whitespace-nowrap"
               style={{ fontFamily: "'Jost', sans-serif" }}
             >
               Perfumes
@@ -171,7 +170,7 @@ export function Header({
             <a
               href="#nossa-casa"
               onClick={scrollToNossaCasa}
-              className="text-[14px] tracking-[0.15em] uppercase font-semibold transition-colors duration-300 text-[#A39683] hover:text-[#F2EDE4]"
+              className="text-[13px] lg:text-[14px] tracking-[0.1em] lg:tracking-[0.15em] uppercase font-semibold transition-colors duration-300 text-[#A39683] hover:text-[#F2EDE4] whitespace-nowrap"
               style={{ fontFamily: "'Jost', sans-serif" }}
             >
               Nossa Casa
@@ -179,9 +178,9 @@ export function Header({
           </nav>
 
           {/* ── Center Logo ────────────────────────────────────────────── */}
-          <div className="flex-shrink-0 md:absolute md:left-1/2 md:-translate-x-1/2 pointer-events-none">
+          <div className="flex-shrink-0 text-center z-10">
             <span
-              className="text-2xl md:text-3xl tracking-[0.3em] uppercase text-[#F2EDE4] select-none"
+              className="text-xl sm:text-2xl md:text-3xl tracking-[0.15em] sm:tracking-[0.3em] uppercase text-[#F2EDE4] select-none"
               style={{ fontFamily: "'Playfair Display', serif", fontWeight: 500 }}
             >
               Your Essence
@@ -207,7 +206,7 @@ export function Header({
             {/* 2. Avatar / Account (desktop only) */}
             <button
               onClick={handleAvatarClick}
-              className="transition-colors duration-300 hidden lg:flex items-center justify-center p-1 text-[#A39683] hover:text-[#F2EDE4] bg-transparent border-none outline-none cursor-pointer"
+              className="transition-colors duration-300 hidden md:flex items-center justify-center p-1 text-[#A39683] hover:text-[#F2EDE4] bg-transparent border-none outline-none cursor-pointer"
               aria-label="Meu Perfil"
             >
               {isAuthenticated && userInitial ? (
@@ -249,7 +248,7 @@ export function Header({
             {isAuthenticated && (
               <button
                 onClick={onLogout}
-                className="transition-colors duration-300 hidden lg:block p-1 text-[#A39683] hover:text-red-400 bg-transparent border-none outline-none cursor-pointer"
+                className="transition-colors duration-300 hidden md:block p-1 text-[#A39683] hover:text-red-400 bg-transparent border-none outline-none cursor-pointer"
                 aria-label="Sair da Conta"
               >
                 <LogOut size={21} strokeWidth={2} />
@@ -258,7 +257,7 @@ export function Header({
 
             {/* Mobile hamburger */}
             <button
-              className="lg:hidden transition-colors duration-300 p-1 text-[#A39683] hover:text-[#F2EDE4] bg-transparent border-none outline-none cursor-pointer"
+              className="md:hidden transition-colors duration-300 p-1 text-[#A39683] hover:text-[#F2EDE4] bg-transparent border-none outline-none cursor-pointer"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               aria-label="Menu"
             >
@@ -389,7 +388,7 @@ export function Header({
             animate={{ x: 0 }}
             exit={{ x: "100%" }}
             transition={{ type: "tween", duration: 0.35 }}
-            className="fixed inset-0 z-40 bg-[#0C0B09] pt-20 pb-8 px-8 overflow-y-auto lg:hidden"
+            className="fixed inset-0 z-40 bg-[#0C0B09] pt-20 pb-8 px-8 overflow-y-auto md:hidden"
           >
             <nav className="flex flex-col gap-8 mt-8">
               {/* FIX 1 (Mobile): "Perfumes" now also calls onSearchOpen() */}
